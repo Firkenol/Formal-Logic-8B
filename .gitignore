@@ -1,0 +1,9 @@
+*.safetensors
+*.bin
+*.pt
+*.log
+outputs/
+cpt-informal-model/
+venv/
+__pycache__/
+.env
