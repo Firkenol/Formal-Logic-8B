@@ -1,9 +1,23 @@
+# weights and checkpoints
 *.safetensors
 *.bin
 *.pt
-*.log
 outputs/
 cpt-informal-model/
+
+# datasets
+*.jsonl
+*.json
+*.csv
+
+# environment and secrets
 venv/
-__pycache__/
 .env
+__pycache__/
+*.pyc
+
+# logging and metrics
+*.log
+runs/
+wandb/
+.DS_Store
