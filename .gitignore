@@ -1,38 +1,6 @@
-# weights and checkpoints
-# Virtual Environments
 thrm_env/
-venv/
-env/
-
-# Massive Repositories
 SWE-bench/
-
-# Datasets and Model Weights (Too big for GitHub)
-*.jsonl
 thrm_adapter/
-*.csv
-
-# Python Cache
-__pycache__/
-*.pyc*.safetensors
-*.bin
-*.pt
-outputs/
-cpt-informal-model/
-
-# datasets
 *.jsonl
-*.json
 *.csv
-
-# environment and secrets
-venv/
-.env
 __pycache__/
-*.pyc
-
-# logging and metrics
-*.log
-runs/
-wandb/
-.DS_Store
