@@ -8,7 +8,7 @@ from trl import SFTTrainer
 data = load_dataset("json", data_files="thrm_cpt_training_data.jsonl", split="train")
 
 # setup tokenizer and base model
-model_id = "meta-llama/Llama-3.2-3B"
+model_id = "meta-llama/Llama-3.1-8B"
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 tokenizer.pad_token = tokenizer.eos_token
 
