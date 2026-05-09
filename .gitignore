@@ -1,6 +1,4 @@
-thrm_env/
-SWE-bench/
-thrm_adapter/
+*.log
 *.jsonl
-*.csv
-__pycache__/
+thrm_env/
+thrm_3b_qlora_final/
