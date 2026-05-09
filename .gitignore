@@ -2,3 +2,4 @@
 *.jsonl
 thrm_env/
 thrm_3b_qlora_final/
+*.txt
