@@ -3,3 +3,7 @@
 thrm_env/
 thrm_3b_qlora_final/
 *.txt
+*.jsonl
+wandb/
+thrm_3b_qlora_final/
+*.log

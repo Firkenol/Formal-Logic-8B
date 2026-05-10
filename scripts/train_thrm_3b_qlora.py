@@ -36,7 +36,7 @@ peft_config = LoraConfig(
 )
 
 # 5. Load Dataset (Change file name if you renamed it earlier)
-dataset = load_dataset("json", data_files="thrm_dataset.jsonl", split="train")
+dataset = load_dataset("json", data_files="thrm_cpt_training_data.jsonl", split="train")
 
 # 6. Setup New SFTConfig (Arguments moved here)
 training_args = SFTConfig(
@@ -46,11 +46,11 @@ training_args = SFTConfig(
     learning_rate=2e-4,
     logging_steps=10,
     max_steps=500,
-    fp16=True,
+    bf16=True,
     optim="paged_adamw_8bit",
     report_to="wandb",
     dataset_text_field="text",
-    max_seq_length=2048,
+    max_length=4096,
 )
 
 # 7. Initialize Trainer
