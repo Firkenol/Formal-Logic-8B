@@ -19,7 +19,9 @@ class SWEBenchOrchestrator:
         return patch_str.strip() + "\n"
 
     def setup_repo(self, repo, commit, td):
-        subprocess.run(["git", "clone", f"[https://github.com/](https://github.com/){repo}.git", td], check=True, capture_output=True)
+        # Remove any Markdown formatting and use a clean f-string
+        url = f"https://github.com/{repo}.git"
+        subprocess.run(["git", "clone", url, td], check=True, capture_output=True)
         subprocess.run(["git", "checkout", commit], cwd=td, check=True, capture_output=True)
 
     def apply_patch(self, patch_str, td):
