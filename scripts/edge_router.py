@@ -6,7 +6,6 @@ class THRMEdgeRouter:
     def __init__(self, base_model="meta-llama/Meta-Llama-3.1-8B", adapter_path="./thrm_qlora_v3"):
         self.tokenizer = AutoTokenizer.from_pretrained(adapter_path)
         
-        # THE FIX: Properly defining the 4-bit config instead of using the deprecated shortcut
         bnb_cfg = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
         
         base = AutoModelForCausalLM.from_pretrained(
@@ -22,8 +21,11 @@ class THRMEdgeRouter:
         return g_pol, d_pol
 
     def generate_baseline(self, issue_text):
-        prompt = f"<|user|>\n{issue_text}\n<|assistant|>\n"
+        # THE FIX: Using Llama's native chat template
+        messages = [{"role": "user", "content": f"Please provide a git patch (diff) to solve this issue:\n{issue_text}"}]
+        prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = self.tokenizer(prompt, return_tensors="pt").to("cuda")
+        
         outputs = self.model.generate(
             **inputs, 
             max_new_tokens=2048, 
@@ -32,12 +34,23 @@ class THRMEdgeRouter:
             pad_token_id=self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id
         )
-        return self.tokenizer.decode(outputs[0], skip_special_tokens=True).split("<|assistant|>")[-1]
+        
+        # Safely slice off the prompt to only return the AI's generated text
+        input_length = inputs['input_ids'].shape[1]
+        return self.tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
 
     def route_task(self, repo_path, target_dir, issue_text):
         g_pol, d_pol = self.compile_dag_context(repo_path, target_dir)
-        prompt = f"<|system|>\n<global_policy trust='HIGH'>{g_pol}</global_policy>\n<directory_policy trust='MEDIUM'>{d_pol}</directory_policy>\n<|user|>\n{issue_text}\n<|assistant|>"
+        
+        # THE FIX: Using Llama's native chat template with system constraints
+        system_content = f"You are a SWE. Output only a valid git patch. <global_policy>{g_pol}</global_policy>\n<directory_policy>{d_pol}</directory_policy>"
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": f"Provide a git patch for this issue:\n{issue_text}"}
+        ]
+        prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = self.tokenizer(prompt, return_tensors="pt").to("cuda")
+        
         outputs = self.model.generate(
             **inputs, 
             max_new_tokens=2048, 
@@ -47,4 +60,6 @@ class THRMEdgeRouter:
             pad_token_id=self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id
         )
-        return self.tokenizer.decode(outputs[0], skip_special_tokens=True).split("<|assistant|>")[-1]
+        
+        input_length = inputs['input_ids'].shape[1]
+        return self.tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
