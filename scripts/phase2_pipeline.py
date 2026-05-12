@@ -35,13 +35,13 @@ if tokenizer.pad_token is None:
 model = PeftModel.from_pretrained(base_model, adapter_path)
 model.eval()
 
-print("Loading OOD dataset (commitpackft)...")
-dataset = load_dataset("bigcode/commitpackft", "python", split="train[:100]", trust_remote_code=True)
+print("Loading OOD dataset (commitpackft) via Parquet bypass...")
+dataset = load_dataset("parquet", data_files="hf://datasets/bigcode/commitpackft@~parquet/python/train/*.parquet", split="train[:100]")
 
 with open(output_file, "w") as f:
     for i in tqdm(range(len(dataset)), desc="OOD Generation"):
         instance = dataset[i]
-        problem_statement = instance.get("message", "")
+        problem_statement = instance.get("message", "") 
         if not problem_statement:
             continue
             
