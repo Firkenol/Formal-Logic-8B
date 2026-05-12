@@ -1,4 +1,4 @@
-import os, subprocess, tempfile, numpy as np
+import os, subprocess, tempfile, sys, numpy as np
 from statsmodels.stats.contingency_tables import mcnemar
 from datasets import load_dataset
 from edge_router import THRMEdgeRouter
@@ -8,23 +8,40 @@ class SWEBenchOrchestrator:
         self.router = router
         self.b_res, self.t_res, self.b_tok, self.t_tok = [], [], [], []
 
+    def clean_patch(self, patch_str):
+        patch_str = patch_str.strip()
+        if patch_str.startswith("```diff"): 
+            patch_str = patch_str[7:]
+        elif patch_str.startswith("```"): 
+            patch_str = patch_str[3:]
+        if patch_str.endswith("```"): 
+            patch_str = patch_str[:-3]
+        return patch_str.strip() + "\n"
+
     def setup_repo(self, repo, commit, td):
         subprocess.run(["git", "clone", f"https://github.com/{repo}.git", td], check=True, capture_output=True)
         subprocess.run(["git", "checkout", commit], cwd=td, check=True, capture_output=True)
 
     def apply_patch(self, patch_str, td):
-        with open(os.path.join(td, "patch.diff"), "w") as f: f.write(patch_str)
+        clean_str = self.clean_patch(patch_str)
+        
+        # Save the raw patch so you can actually read it
+        with open(f"logs/debug_patch_{np.random.randint(1000)}.txt", "w") as f:
+            f.write(clean_str)
+            
+        with open(os.path.join(td, "patch.diff"), "w") as f: 
+            f.write(clean_str)
         return subprocess.run(["git", "apply", "patch.diff"], cwd=td, capture_output=True).returncode == 0
-
+    
     def verify(self, td):
-        try: return subprocess.run(["pytest"], cwd=td, capture_output=True, timeout=120).returncode == 0
-        except: return False
+        try: 
+            return subprocess.run([sys.executable, "-m", "pytest"], cwd=td, capture_output=True, timeout=120).returncode == 0
+        except: 
+            return False
 
     def run_eval(self, limit=500):
         print("Initializing SWE-bench Evaluation Protocol...")
         dataset = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")
-        
-        # Ensure output directory exists before 12 hours of compute
         os.makedirs("logs", exist_ok=True)
 
         for i, row in enumerate(dataset):
@@ -36,24 +53,22 @@ class SWEBenchOrchestrator:
                 self.setup_repo(row['repo'], row['base_commit'], t_dir)
 
                 b_patch = self.router.generate_baseline(row['problem_statement'])
-                self.b_tok.append(len(self.router.tokenizer.encode(row['problem_statement'])))
+                self.b_tok.append(len(self.router.tokenizer.encode(b_patch)))
                 self.b_res.append(1 if self.apply_patch(b_patch, b_dir) and self.verify(b_dir) else 0)
 
                 t_patch = self.router.route_task(t_dir, ".", row['problem_statement'])
-                self.t_tok.append(len(self.router.tokenizer.encode(row['problem_statement'])))
+                self.t_tok.append(len(self.router.tokenizer.encode(t_patch)))
                 self.t_res.append(1 if self.apply_patch(t_patch, t_dir) and self.verify(t_dir) else 0)
 
         p_val = mcnemar([[0, sum(1 for b,t in zip(self.b_res, self.t_res) if b==1 and t==0)], [sum(1 for b,t in zip(self.b_res, self.t_res) if b==0 and t==1), 0]], exact=True).pvalue
-        comp = 1 - (np.mean(self.t_tok) / np.mean(self.b_tok))
+        comp = 1 - (np.mean(self.t_tok) / np.mean(self.b_tok)) if np.mean(self.b_tok) > 0 else 0
         
-        # Save final metrics safely
         final_stats = f"Baseline Pass: {sum(self.b_res)/limit*100:.2f}%\nTHRM Pass: {sum(self.t_res)/limit*100:.2f}%\nP-Value: {p_val}\nCompression: {comp*100:.2f}%\n"
         print("\n--- FINAL PAPER RESULTS ---")
         print(final_stats)
-        
-        with open("logs/FINAL_PAPER_RESULTS.txt", "w") as f:
+        with open("logs/FINAL_PAPER_RESULTS.txt", "w") as f: 
             f.write(final_stats)
 
 if __name__ == "__main__":
     router = THRMEdgeRouter(adapter_path="./thrm_qlora_v3")
-    SWEBenchOrchestrator(router).run_eval(limit=500)
+    SWEBenchOrchestrator(router).run_eval(limit=3)

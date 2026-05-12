@@ -24,12 +24,27 @@ class THRMEdgeRouter:
     def generate_baseline(self, issue_text):
         prompt = f"<|user|>\n{issue_text}\n<|assistant|>\n"
         inputs = self.tokenizer(prompt, return_tensors="pt").to("cuda")
-        outputs = self.model.generate(**inputs, max_new_tokens=1024, temperature=0.1, do_sample=True)
+        outputs = self.model.generate(
+            **inputs, 
+            max_new_tokens=2048, 
+            temperature=0.1, 
+            do_sample=True,
+            pad_token_id=self.tokenizer.eos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id
+        )
         return self.tokenizer.decode(outputs[0], skip_special_tokens=True).split("<|assistant|>")[-1]
 
     def route_task(self, repo_path, target_dir, issue_text):
         g_pol, d_pol = self.compile_dag_context(repo_path, target_dir)
         prompt = f"<|system|>\n<global_policy trust='HIGH'>{g_pol}</global_policy>\n<directory_policy trust='MEDIUM'>{d_pol}</directory_policy>\n<|user|>\n{issue_text}\n<|assistant|>"
         inputs = self.tokenizer(prompt, return_tensors="pt").to("cuda")
-        outputs = self.model.generate(**inputs, max_new_tokens=1024, temperature=0.2, repetition_penalty=1.15, do_sample=True)
+        outputs = self.model.generate(
+            **inputs, 
+            max_new_tokens=2048, 
+            temperature=0.2, 
+            repetition_penalty=1.15, 
+            do_sample=True,
+            pad_token_id=self.tokenizer.eos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id
+        )
         return self.tokenizer.decode(outputs[0], skip_special_tokens=True).split("<|assistant|>")[-1]
