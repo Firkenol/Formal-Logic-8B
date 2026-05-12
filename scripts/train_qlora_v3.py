@@ -2,7 +2,7 @@ print("--- STARTING V3 TRAINING SCRIPT ---")
 import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, TrainingArguments
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, prepare_model_for_kbit_training
 from trl import SFTTrainer
 
 print("Loading model and tokenizer...")
@@ -15,9 +15,8 @@ model = prepare_model_for_kbit_training(model)
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 if tokenizer.pad_token is None: tokenizer.pad_token = tokenizer.eos_token
 
-print("Applying LoRA config...")
+print("Defining LoRA config...")
 peft_config = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.1, bias="none", task_type="CAUSAL_LM", target_modules=["q_proj", "k_proj", "v_proj", "o_proj"])
-model = get_peft_model(model, peft_config)
 
 print("Loading dataset...")
 dataset = load_dataset("parquet", data_files="https://huggingface.co/datasets/bigcode/commitpackft/resolve/refs%2Fconvert%2Fparquet/python/train/0000.parquet", split="train[:2000]")
@@ -37,9 +36,9 @@ args = TrainingArguments(
 
 print("Initializing Trainer...")
 trainer = SFTTrainer(
-    model=model,
+    model=model, # Passing the raw base model
     train_dataset=dataset,
-    peft_config=peft_config,
+    peft_config=peft_config, # SFTTrainer applies the adapter for us natively now
     args=args,
     processing_class=tokenizer,
     formatting_func=lambda x: [format_prompt(i) for i in [x]]
