@@ -21,8 +21,8 @@ class THRMEdgeRouter:
         return g_pol, d_pol
 
     def generate_baseline(self, issue_text):
-        # THE FIX: Force the autocomplete to start writing a strict git diff
-        prompt = f"Issue:\n{issue_text}\n\nSolution Patch:\n```diff\n--- a/"
+        # THE FIX: Added strict rules to prevent test file modification
+        prompt = f"CRITICAL RULE: DO NOT modify any files in tests/ directories or any test_*.py files. Only modify the core source code to fix the bug.\n\nIssue:\n{issue_text}\n\nSolution Patch:\n```diff\n--- a/"
         inputs = self.tokenizer(prompt, return_tensors="pt").to("cuda")
         
         outputs = self.model.generate(
@@ -36,15 +36,13 @@ class THRMEdgeRouter:
         
         input_length = inputs['input_ids'].shape[1]
         raw_output = self.tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
-        
-        # Prepend the starting diff string and chop off any conversational text at the end
         return "--- a/" + raw_output.split("```")[0]
 
     def route_task(self, repo_path, target_dir, issue_text):
         g_pol, d_pol = self.compile_dag_context(repo_path, target_dir)
         
-        # THE FIX: Force the autocomplete to start writing a strict git diff
-        prompt = f"Global Policy:\n{g_pol}\n\nDirectory Policy:\n{d_pol}\n\nIssue:\n{issue_text}\n\nSolution Patch:\n```diff\n--- a/"
+        # THE FIX: Added strict rules to prevent test file modification
+        prompt = f"Global Policy:\n{g_pol}\n\nDirectory Policy:\n{d_pol}\n\nCRITICAL RULE: DO NOT modify any files in tests/ directories or any test_*.py files. Only modify the core source code to fix the bug.\n\nIssue:\n{issue_text}\n\nSolution Patch:\n```diff\n--- a/"
         inputs = self.tokenizer(prompt, return_tensors="pt").to("cuda")
         
         outputs = self.model.generate(
@@ -59,5 +57,4 @@ class THRMEdgeRouter:
         
         input_length = inputs['input_ids'].shape[1]
         raw_output = self.tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
-        
         return "--- a/" + raw_output.split("```")[0]

@@ -19,27 +19,42 @@ class SWEBenchOrchestrator:
         return patch_str.strip() + "\n"
 
     def setup_repo(self, repo, commit, td):
-        subprocess.run(["git", "clone", f"https://github.com/{repo}.git", td], check=True, capture_output=True)
+        subprocess.run(["git", "clone", f"[https://github.com/](https://github.com/){repo}.git", td], check=True, capture_output=True)
         subprocess.run(["git", "checkout", commit], cwd=td, check=True, capture_output=True)
 
     def apply_patch(self, patch_str, td):
         clean_str = self.clean_patch(patch_str)
         
-        # Save the raw patch so you can actually read it
         with open(f"logs/debug_patch_{np.random.randint(1000)}.txt", "w") as f:
             f.write(clean_str)
             
         with open(os.path.join(td, "patch.diff"), "w") as f: 
             f.write(clean_str)
-        return subprocess.run(["git", "apply", "patch.diff"], cwd=td, capture_output=True).returncode == 0
-    
+        
+        # Capture and print exact Git errors
+        result = subprocess.run(["git", "apply", "patch.diff"], cwd=td, capture_output=True, text=True)
+        if result.returncode != 0:
+            error_msg = result.stderr.strip().splitlines()[0] if result.stderr else 'Unknown Error'
+            print(f"  -> Git Apply FAILED: {error_msg}")
+            return False
+        return True
+
     def verify(self, td):
         try: 
-            return subprocess.run([sys.executable, "-m", "pytest"], cwd=td, capture_output=True, timeout=120).returncode == 0
-        except: 
+            # Capture and print exact Pytest errors
+            result = subprocess.run([sys.executable, "-m", "pytest"], cwd=td, capture_output=True, text=True, timeout=120)
+            if result.returncode != 0:
+                print("  -> Pytest FAILED (Logic Error or Unit Test Failed)")
+                return False
+            return True
+        except subprocess.TimeoutExpired:
+            print("  -> Pytest TIMEOUT (Took longer than 120s)")
+            return False
+        except Exception as e: 
+            print(f"  -> Pytest CRASHED: {e}")
             return False
 
-    def run_eval(self, limit=500):
+    def run_eval(self, limit=3):
         print("Initializing SWE-bench Evaluation Protocol...")
         dataset = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")
         os.makedirs("logs", exist_ok=True)
