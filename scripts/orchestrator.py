@@ -1,5 +1,5 @@
 import os, subprocess, tempfile, numpy as np
-from scipy.stats import mcnemar
+from statsmodels.stats.contingency_tables import mcnemar
 from datasets import load_dataset
 from edge_router import THRMEdgeRouter
 
@@ -21,9 +21,16 @@ class SWEBenchOrchestrator:
         except: return False
 
     def run_eval(self, limit=500):
+        print("Initializing SWE-bench Evaluation Protocol...")
         dataset = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")
+        
+        # Ensure output directory exists before 12 hours of compute
+        os.makedirs("logs", exist_ok=True)
+
         for i, row in enumerate(dataset):
             if i >= limit: break
+            print(f"Evaluating Instance {i+1}/{limit}: {row['repo']}")
+            
             with tempfile.TemporaryDirectory() as b_dir, tempfile.TemporaryDirectory() as t_dir:
                 self.setup_repo(row['repo'], row['base_commit'], b_dir)
                 self.setup_repo(row['repo'], row['base_commit'], t_dir)
@@ -39,8 +46,14 @@ class SWEBenchOrchestrator:
         p_val = mcnemar([[0, sum(1 for b,t in zip(self.b_res, self.t_res) if b==1 and t==0)], [sum(1 for b,t in zip(self.b_res, self.t_res) if b==0 and t==1), 0]], exact=True).pvalue
         comp = 1 - (np.mean(self.t_tok) / np.mean(self.b_tok))
         
+        # Save final metrics safely
+        final_stats = f"Baseline Pass: {sum(self.b_res)/limit*100:.2f}%\nTHRM Pass: {sum(self.t_res)/limit*100:.2f}%\nP-Value: {p_val}\nCompression: {comp*100:.2f}%\n"
+        print("\n--- FINAL PAPER RESULTS ---")
+        print(final_stats)
+        
         with open("logs/FINAL_PAPER_RESULTS.txt", "w") as f:
-            f.write(f"Baseline Pass: {sum(self.b_res)/limit*100:.2f}%\nTHRM Pass: {sum(self.t_res)/limit*100:.2f}%\nP-Value: {p_val}\nCompression: {comp*100:.2f}%\n")
+            f.write(final_stats)
 
 if __name__ == "__main__":
-    SWEBenchOrchestrator(THRMEdgeRouter("./thrm_qlora_v2")).run_eval(limit=500)
+    router = THRMEdgeRouter(adapter_path="./thrm_qlora_v3")
+    SWEBenchOrchestrator(router).run_eval(limit=500)

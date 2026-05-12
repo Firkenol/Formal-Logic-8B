@@ -1,9 +1,22 @@
+# Model Weights and Adapters
+*.safetensors
+*.bin
+thrm_qlora_v2/
+thrm_qlora_v3/
+thrm_3b_qlora_final/
+
+# Evaluation Logs and Data
 *.log
 *.jsonl
-thrm_env/
-thrm_3b_qlora_final/
 *.txt
-*.jsonl
+logs/
+nohup.out
+
+# Python Cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Environments and Tracking
+thrm_env/
 wandb/
-thrm_3b_qlora_final/
-*.log

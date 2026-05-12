@@ -20,7 +20,9 @@ peft_config = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.1, bias="none", tas
 
 print("Loading dataset...")
 dataset = load_dataset("parquet", data_files="https://huggingface.co/datasets/bigcode/commitpackft/resolve/refs%2Fconvert%2Fparquet/python/train/0000.parquet", split="train[:2000]")
-def format_prompt(ex): return f"<|begin_of_text|>Resolve this issue with a git patch.\n\nIssue:\n{ex.get('message', '')}\n\nPatch:\n```diff\n{ex.get('patch', '')}\n```<|end_of_text|>"
+
+def format_prompt(ex): 
+    return f"<|begin_of_text|>Resolve this issue with a git patch.\n\nIssue:\n{ex.get('message', '')}\n\nPatch:\n```diff\n{ex.get('patch', '')}\n```<|end_of_text|>"
 
 args = TrainingArguments(
     output_dir=out_dir,
@@ -36,12 +38,12 @@ args = TrainingArguments(
 
 print("Initializing Trainer...")
 trainer = SFTTrainer(
-    model=model, # Passing the raw base model
+    model=model,
     train_dataset=dataset,
-    peft_config=peft_config, # SFTTrainer applies the adapter for us natively now
+    peft_config=peft_config,
     args=args,
     processing_class=tokenizer,
-    formatting_func=lambda x: [format_prompt(i) for i in [x]]
+    formatting_func=format_prompt
 )
 
 print("Starting training loop...")
