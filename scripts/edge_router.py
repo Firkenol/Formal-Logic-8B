@@ -21,9 +21,8 @@ class THRMEdgeRouter:
         return g_pol, d_pol
 
     def generate_baseline(self, issue_text):
-        # THE FIX: Using Llama's native chat template
-        messages = [{"role": "user", "content": f"Please provide a git patch (diff) to solve this issue:\n{issue_text}"}]
-        prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        # THE FIX: Hardcoding Llama 3.1's exact prompt format to bypass the missing template error
+        prompt = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nPlease provide a git patch (diff) to solve this issue:\n{issue_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
         inputs = self.tokenizer(prompt, return_tensors="pt").to("cuda")
         
         outputs = self.model.generate(
@@ -35,20 +34,14 @@ class THRMEdgeRouter:
             eos_token_id=self.tokenizer.eos_token_id
         )
         
-        # Safely slice off the prompt to only return the AI's generated text
         input_length = inputs['input_ids'].shape[1]
         return self.tokenizer.decode(outputs[0][input_length:], skip_special_tokens=True)
 
     def route_task(self, repo_path, target_dir, issue_text):
         g_pol, d_pol = self.compile_dag_context(repo_path, target_dir)
         
-        # THE FIX: Using Llama's native chat template with system constraints
-        system_content = f"You are a SWE. Output only a valid git patch. <global_policy>{g_pol}</global_policy>\n<directory_policy>{d_pol}</directory_policy>"
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": f"Provide a git patch for this issue:\n{issue_text}"}
-        ]
-        prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        # THE FIX: Hardcoding Llama 3.1's exact system and user prompt format
+        prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a SWE. Output only a valid git patch. <global_policy>{g_pol}</global_policy>\n<directory_policy>{d_pol}</directory_policy><|eot_id|><|start_header_id|>user<|end_header_id|>\n\nProvide a git patch for this issue:\n{issue_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
         inputs = self.tokenizer(prompt, return_tensors="pt").to("cuda")
         
         outputs = self.model.generate(
