@@ -8,16 +8,17 @@ from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from tqdm import tqdm
 
-print("Running SWE-bench Docker evaluation...")
-swe_bench_dir = os.path.expanduser("~/Formal-Logic-8B/SWE-bench")
-subprocess.run([
-    "python", "-m", "swebench.harness.run_evaluation",
-    "--predictions_path", "../predictions.jsonl",
-    "--run_id", "thrm_3b_qlora_eval",
-    "--max_workers", "4",
-    "--dataset_name", "princeton-nlp/SWE-bench_Lite",
-    "--split", "test"
-], cwd=swe_bench_dir)
+#Temp: Skip Step A, already completed
+#print("Running SWE-bench Docker evaluation...")
+#swe_bench_dir = os.path.expanduser("~/Formal-Logic-8B/SWE-bench")
+#subprocess.run([
+#    "python", "-m", "swebench.harness.run_evaluation",
+#    "--predictions_path", "../predictions.jsonl",
+#    "--run_id", "thrm_3b_qlora_eval",
+#    "--max_workers", "4",
+#    "--dataset_name", "princeton-nlp/SWE-bench_Lite",
+#    "--split", "test"
+#], cwd=swe_bench_dir)
 
 print("Starting OOD generation...")
 base_model_id = "meta-llama/Meta-Llama-3.1-8B"
@@ -35,7 +36,7 @@ model = PeftModel.from_pretrained(base_model, adapter_path)
 model.eval()
 
 print("Loading OOD dataset (commitpackft)...")
-dataset = load_dataset("bigcode/commitpackft", "python", split="train[:100]")
+dataset = load_dataset("bigcode/commitpackft", "python", split="train[:100]", trust_remote_code=True)
 
 with open(output_file, "w") as f:
     for i in tqdm(range(len(dataset)), desc="OOD Generation"):
