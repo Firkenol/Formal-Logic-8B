@@ -1,90 +1,74 @@
-import os, subprocess, tempfile, sys, numpy as np
-from statsmodels.stats.contingency_tables import mcnemar
+import os, subprocess, tempfile, sys, datetime
 from datasets import load_dataset
 from edge_router import THRMEdgeRouter
 
 class SWEBenchOrchestrator:
     def __init__(self, router):
         self.router = router
-        self.b_res, self.t_res, self.b_tok, self.t_tok = [], [], [], []
-
-    def clean_patch(self, patch_str):
-        patch_str = patch_str.strip()
-        if patch_str.startswith("```diff"): 
-            patch_str = patch_str[7:]
-        elif patch_str.startswith("```"): 
-            patch_str = patch_str[3:]
-        if patch_str.endswith("```"): 
-            patch_str = patch_str[:-3]
-        return patch_str.strip() + "\n"
+        # Create a unique folder for this specific run
+        run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_dir = f"logs/run_{run_id}"
+        os.makedirs(self.log_dir, exist_ok=True)
+        print(f"Logging this session to: {self.log_dir}")
 
     def setup_repo(self, repo, commit, td):
-        # Remove any Markdown formatting and use a clean f-string
         url = f"https://github.com/{repo}.git"
         subprocess.run(["git", "clone", url, td], check=True, capture_output=True)
         subprocess.run(["git", "checkout", commit], cwd=td, check=True, capture_output=True)
 
-    def apply_patch(self, patch_str, td):
-        clean_str = self.clean_patch(patch_str)
-        
-        with open(f"logs/debug_patch_{np.random.randint(1000)}.txt", "w") as f:
-            f.write(clean_str)
+    def force_overwrite(self, ai_output, td, instance_id, mode):
+        # Save the raw output immediately for your review
+        raw_log_path = os.path.join(self.log_dir, f"raw_{instance_id}_{mode}.txt")
+        with open(raw_log_path, "w") as f:
+            f.write(ai_output)
+
+        try:
+            # Look for our new markers
+            if "[TARGET_FILE]" not in ai_output or "[NEW_CODE_START]" not in ai_output:
+                print(f"\n  !! FORMAT ERROR in {mode} !!")
+                print(f"  AI said: {ai_output[:300]}...") # Print first 300 chars so you can see the mess
+                return False
             
-        with open(os.path.join(td, "patch.diff"), "w") as f: 
-            f.write(clean_str)
-        
-        # Capture and print exact Git errors
-        result = subprocess.run(["git", "apply", "patch.diff"], cwd=td, capture_output=True, text=True)
-        if result.returncode != 0:
-            error_msg = result.stderr.strip().splitlines()[0] if result.stderr else 'Unknown Error'
-            print(f"  -> Git Apply FAILED: {error_msg}")
+            file_path = ai_output.split("[TARGET_FILE]")[1].split("[NEW_CODE_START]")[0].strip()
+            new_content = ai_output.split("[NEW_CODE_START]")[1].split("```")[0].strip()
+            
+            full_path = os.path.join(td, file_path)
+            with open(full_path, "w") as f:
+                f.write(new_content)
+            return True
+        except Exception as e:
+            print(f"  -> Parse Error: {e}")
             return False
-        return True
 
     def verify(self, td):
         try: 
-            # Capture and print exact Pytest errors
-            result = subprocess.run([sys.executable, "-m", "pytest"], cwd=td, capture_output=True, text=True, timeout=120)
-            if result.returncode != 0:
-                print("  -> Pytest FAILED (Logic Error or Unit Test Failed)")
-                return False
-            return True
-        except subprocess.TimeoutExpired:
-            print("  -> Pytest TIMEOUT (Took longer than 120s)")
-            return False
-        except Exception as e: 
-            print(f"  -> Pytest CRASHED: {e}")
-            return False
+            res = subprocess.run([sys.executable, "-m", "pytest"], cwd=td, capture_output=True, timeout=120)
+            return res.returncode == 0
+        except: return False
 
     def run_eval(self, limit=3):
-        print("Initializing SWE-bench Evaluation Protocol...")
         dataset = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")
-        os.makedirs("logs", exist_ok=True)
+        b_count, t_count = 0, 0
 
         for i, row in enumerate(dataset):
             if i >= limit: break
-            print(f"Evaluating Instance {i+1}/{limit}: {row['repo']}")
+            print(f"\n[{i+1}/{limit}] Testing {row['repo']}...")
             
             with tempfile.TemporaryDirectory() as b_dir, tempfile.TemporaryDirectory() as t_dir:
                 self.setup_repo(row['repo'], row['base_commit'], b_dir)
                 self.setup_repo(row['repo'], row['base_commit'], t_dir)
 
-                b_patch = self.router.generate_baseline(row['problem_statement'])
-                self.b_tok.append(len(self.router.tokenizer.encode(b_patch)))
-                self.b_res.append(1 if self.apply_patch(b_patch, b_dir) and self.verify(b_dir) else 0)
+                b_out = self.router.generate_baseline(row['problem_statement'])
+                if self.force_overwrite(b_out, b_dir, i, "baseline") and self.verify(b_dir):
+                    b_count += 1
+                    print("  [+] Baseline PASSED")
 
-                t_patch = self.router.route_task(t_dir, ".", row['problem_statement'])
-                self.t_tok.append(len(self.router.tokenizer.encode(t_patch)))
-                self.t_res.append(1 if self.apply_patch(t_patch, t_dir) and self.verify(t_dir) else 0)
+                t_out = self.router.route_task(t_dir, ".", row['problem_statement'])
+                if self.force_overwrite(t_out, t_dir, i, "thrm") and self.verify(t_dir):
+                    t_count += 1
+                    print("  [+] THRM PASSED")
 
-        p_val = mcnemar([[0, sum(1 for b,t in zip(self.b_res, self.t_res) if b==1 and t==0)], [sum(1 for b,t in zip(self.b_res, self.t_res) if b==0 and t==1), 0]], exact=True).pvalue
-        comp = 1 - (np.mean(self.t_tok) / np.mean(self.b_tok)) if np.mean(self.b_tok) > 0 else 0
-        
-        final_stats = f"Baseline Pass: {sum(self.b_res)/limit*100:.2f}%\nTHRM Pass: {sum(self.t_res)/limit*100:.2f}%\nP-Value: {p_val}\nCompression: {comp*100:.2f}%\n"
-        print("\n--- FINAL PAPER RESULTS ---")
-        print(final_stats)
-        with open("logs/FINAL_PAPER_RESULTS.txt", "w") as f: 
-            f.write(final_stats)
+        print(f"\n--- FINAL: Baseline {b_count}/{limit} | THRM {t_count}/{limit} ---")
 
 if __name__ == "__main__":
     router = THRMEdgeRouter(adapter_path="./thrm_qlora_v3")
