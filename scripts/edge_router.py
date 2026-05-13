@@ -4,28 +4,30 @@ from peft import PeftModel
 
 class THRMEdgeRouter:
     def __init__(self, base_model="meta-llama/Meta-Llama-3.1-8B", adapter_path="./thrm_qlora_v3"):
-        self.tokenizer = AutoTokenizer.from_pretrained(adapter_path)
+        # THE FIX: Set clean_up_tokenization_spaces=False to stop the tokenizer from corrupting code indentation
+        self.tokenizer = AutoTokenizer.from_pretrained(adapter_path, clean_up_tokenization_spaces=False)
+        
         bnb_cfg = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
         base = AutoModelForCausalLM.from_pretrained(base_model, quantization_config=bnb_cfg, device_map="auto")
         self.model = PeftModel.from_pretrained(base, adapter_path)
 
-    def generate_baseline(self, issue_text):
-        prompt = f"Issue:\n{issue_text}\n\nTask: Provide the full code for the fix.\n\n[TARGET_FILE]\n"
-        return self._run(prompt)
-
     def route_task(self, repo_path, target_dir, issue_text):
-        g_pol = open(os.path.join(repo_path, "global.policy")).read() if os.path.exists(os.path.join(repo_path, "global.policy")) else ""
-        prompt = f"Policy: {g_pol}\nIssue: {issue_text}\n\nTask: Provide the full code for the fix.\n\n[TARGET_FILE]\n"
-        return self._run(prompt)
-
-    def _run(self, prompt):
+        # We give it a pattern to follow, not a new language to learn
+        prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a senior software engineer. Output a unified git diff to fix the issue. Use the standard --- a/file and +++ b/file format.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nIssue:\n{issue_text}\n\nSolution:<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n```diff\n--- a/"
+        
         inputs = self.tokenizer(prompt, return_tensors="pt").to("cuda")
         outputs = self.model.generate(
             **inputs, 
-            max_new_tokens=3500, # Llama 4 can handle longer contexts
-            temperature=0.1, 
-            do_sample=True, 
-            pad_token_id=self.tokenizer.eos_token_id
+            max_new_tokens=2500, 
+            temperature=0.1, # Keep it low for structural precision
+            do_sample=True,
+            pad_token_id=self.tokenizer.eos_token_id,
+            eos_token_id=self.tokenizer.eos_token_id
         )
-        # We return the whole thing including the markers so the orchestrator can parse it
-        return self.tokenizer.decode(outputs[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+        
+        # Return the raw text—our new Orchestrator will handle the cleaning
+        return "--- a/" + self.tokenizer.decode(outputs[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+
+    def generate_baseline(self, issue_text):
+        # Same logic for baseline to keep comparison fair
+        return self.route_task("", "", issue_text)
