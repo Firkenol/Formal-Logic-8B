@@ -1,18 +1,22 @@
 # edge_router.py
 #
+# Pure transformers inference — no vLLM, no flashinfer, no JIT compilation,
+# no CUDA toolkit version dependency.  The only runtime requirement is that
+# the CUDA *driver* is present, which it is (nvidia-smi works).
+#
 # CUDA_VISIBLE_DEVICES must be set before any import touches libcuda.
-# vLLM's platforms/__init__.py forks a subprocess to enumerate device
-# capabilities; if more than one device is visible, that subprocess races
-# the parent on Python's import lock and deadlocks silently.
-# Pinning to device 0 here, at the very top of the module, is the only
-# position that fires before vLLM's import-time platform probe runs.
+# Doing it here at module top is the only position that reliably fires
+# before torch probes the device list on import.
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-os.environ["VLLM_WORKER_USE_RAY"] = "0"       # disable Ray backend entirely
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-from vllm import LLM, SamplingParams
-from vllm.lora.request import LoRARequest
+import logging
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import PeftModel
+
+logger = logging.getLogger(__name__)
 
 
 class THRMEdgeRouter:
@@ -21,30 +25,48 @@ class THRMEdgeRouter:
         base_model: str = "meta-llama/Meta-Llama-3.1-8B-Instruct",
         adapter_path: str = "./thrm_qlora_v3",
     ):
-        # tensor_parallel_size=1 with a single visible device means vLLM never
-        # attempts to init a NCCL communicator ring across multiple GPUs.
-        # An 8B model in bfloat16 is ~16 GiB; 0.85 utilisation on an 80 GB
-        # A100 leaves plenty of headroom for the KV cache.
-        self.llm = LLM(
-            model=base_model,
-            dtype="bfloat16",
-            enable_lora=True,
-            max_lora_rank=64,
-            tensor_parallel_size=1,
-            gpu_memory_utilization=0.85,
-            enforce_eager=True,       # skip CUDA graph capture; faster cold start
-            trust_remote_code=False,
-        )
-        self.adapter_path = adapter_path
+        self.device = torch.device("cuda:0")
 
-        self.sampling_params = SamplingParams(
+        logger.info("Loading tokenizer from %s", adapter_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            adapter_path,
+            use_fast=True,
+        )
+        if self.tokenizer.pad_token_id is None:
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+
+        logger.info("Loading base model %s", base_model)
+        # device_map=None + explicit .to() bypasses accelerate's multi-GPU
+        # dispatch, which is what triggered NCCL init and the original deadlock.
+        base = AutoModelForCausalLM.from_pretrained(
+            base_model,
+            torch_dtype=torch.bfloat16,
+            device_map=None,
+            low_cpu_mem_usage=True,
+        )
+        base = base.to(self.device)
+
+        logger.info("Attaching adapter from %s", adapter_path)
+        self.model = PeftModel.from_pretrained(base, adapter_path, is_trainable=False)
+        self.model.eval()
+
+        logger.info(
+            "Ready on %s — %.2f GiB allocated",
+            self.device,
+            torch.cuda.memory_allocated(self.device) / 1024 ** 3,
+        )
+
+        # Sampling params equivalent to the vLLM config
+        self._gen_kwargs = dict(
+            max_new_tokens=2500,
             temperature=0.1,
-            max_tokens=2500,
-            skip_special_tokens=True,
+            top_p=0.95,
+            do_sample=True,
+            repetition_penalty=1.05,
+            pad_token_id=self.tokenizer.pad_token_id,
+            eos_token_id=self.tokenizer.eos_token_id,
         )
 
-    # ------------------------------------------------------------------
-    # Internal helpers
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -65,28 +87,37 @@ class THRMEdgeRouter:
         )
 
     @staticmethod
-    def _prefix_output(raw: str) -> str:
-        # The prompt already primed the model mid-header; re-attach the
-        # prefix so the caller receives a syntactically complete diff.
+    def _prefix(raw: str) -> str:
         return "--- a/" + raw
 
+    @torch.inference_mode()
+    def _generate(self, prompt: str, use_adapter: bool) -> str:
+        inputs = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            add_special_tokens=False,
+        ).to(self.device)
+
+        prompt_len = inputs["input_ids"].shape[1]
+
+        # Switch adapter on/off without reloading the model
+        if use_adapter:
+            self.model.enable_adapter_layers()
+        else:
+            self.model.disable_adapter_layers()
+
+        output_ids = self.model.generate(**inputs, **self._gen_kwargs)
+        generated = output_ids[0][prompt_len:]
+        return self._prefix(self.tokenizer.decode(generated, skip_special_tokens=True))
+
     # ------------------------------------------------------------------
-    # Public interface — original signatures preserved exactly
+    # Public interface — original signatures preserved
     # ------------------------------------------------------------------
 
     def route_task(self, repo_path: str, target_dir: str, issue_text: str) -> str:
         """Generate a patch using the fine-tuned adapter."""
-        prompt = self._build_prompt(issue_text)
-        lora_req = LoRARequest("thrm_adapter", 1, self.adapter_path)
-        outputs = self.llm.generate(
-            [prompt],
-            sampling_params=self.sampling_params,
-            lora_request=lora_req,
-        )
-        return self._prefix_output(outputs[0].outputs[0].text)
+        return self._generate(self._build_prompt(issue_text), use_adapter=True)
 
     def generate_baseline(self, issue_text: str) -> str:
         """Generate a patch from the base model without the adapter."""
-        prompt = self._build_prompt(issue_text)
-        outputs = self.llm.generate([prompt], sampling_params=self.sampling_params)
-        return self._prefix_output(outputs[0].outputs[0].text)
+        return self._generate(self._build_prompt(issue_text), use_adapter=False)
