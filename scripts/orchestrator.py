@@ -15,35 +15,44 @@ class SWEBenchOrchestrator:
         subprocess.run(["git", "checkout", commit], cwd=td, check=True, capture_output=True)
 
     def extract_and_apply(self, ai_text, td, mode):
-        # 1. Scraping: Find the diff even if the AI surrounded it with chatter
-        patch = ai_text.split("```diff")[-1].split("```")[0].strip()
-        if not patch.startswith("--- a/"):
-            # Fallback if AI forgot the markdown tags
-            match = re.search(r"--- a/.*", ai_text, re.DOTALL)
-            patch = match.group(0) if match else ai_text
+            # find diff block
+            patch = ai_text.split("```diff")[-1].split("```")[0].strip()
+            if not patch.startswith("--- a/"):
+                # fallback regex
+                match = re.search(r"--- a/.*", ai_text, re.DOTALL)
+                patch = match.group(0) if match else ai_text
 
-        # 2. Sanitization: Ensure a trailing newline (Git's biggest pet peeve)
-        patch = patch.strip() + "\n"
+            # ensure trailing newline
+            patch = patch.strip() + "\n"
 
-        patch_path = os.path.join(td, f"fix_{mode}.patch")
-        with open(patch_path, "w") as f:
-            f.write(patch)
+            patch_path = os.path.join(td, f"fix_{mode}.patch")
+            with open(patch_path, "w") as f:
+                f.write(patch)
 
-        # 3. Execution: Try to apply it
-        res = subprocess.run(["git", "apply", "--whitespace=fix", f"fix_{mode}.patch"], cwd=td, capture_output=True, text=True)
-        if res.returncode != 0:
-            print(f"  [!] {mode.upper()} Patch Failed: {res.stderr.strip().splitlines()[0] if res.stderr else 'Malformed Diff'}")
-            return False
-        return True
+            # -f prevents patch from pausing to ask for stdin if the diff is fucked
+            res = subprocess.run(
+                ["patch", "-p1", "--fuzz=3", "-f", "-i", f"fix_{mode}.patch"], 
+                cwd=td, 
+                capture_output=True, 
+                text=True
+            )
+            
+            if res.returncode != 0:
+                err_msg = res.stderr.strip().splitlines()[0] if res.stderr else "Malformed Diff / Patch Failed"
+                print(f"  [!] {mode.upper()} Patch Failed: {err_msg}")
+                return False
+                
+            return True
 
     def verify(self, td):
         try:
             # Short timeout to keep the "quick turnaround" promise
             res = subprocess.run([sys.executable, "-m", "pytest"], cwd=td, capture_output=True, timeout=60)
             return res.returncode == 0
-        except: return False
+        except: 
+            return False
 
-    def run_eval(self, limit=3):
+    def run_eval(self, limit=1):
         print(f"Starting session. Logs at: {self.log_dir}")
         dataset = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")
         results = {"baseline": 0, "thrm": 0}
@@ -62,7 +71,7 @@ class SWEBenchOrchestrator:
                     results["baseline"] += 1
                     print("  [✓] Baseline Solved")
 
-                # Test THRM (Your Trained Model)
+                # Test THRM
                 t_out = self.router.route_task(t_dir, ".", row['problem_statement'])
                 if self.extract_and_apply(t_out, t_dir, "thrm") and self.verify(t_dir):
                     results["thrm"] += 1
@@ -71,6 +80,12 @@ class SWEBenchOrchestrator:
         print(f"\n--- SCORECARD: Baseline {results['baseline']} | THRM {results['thrm']} ---")
 
 if __name__ == "__main__":
-    # Ensure this points to your specific Llama 4 Maverick/Scout adapter
+    import sys
+    print("\n[SYSTEM] Script triggered. Executing...", flush=True)
+    
+    print("[SYSTEM] Initializing THRMEdgeRouter. Loading weights to GPU...", flush=True)
+    # If it hangs, it will hang right after printing the line above.
     router = THRMEdgeRouter(adapter_path="./thrm_qlora_v3")
-    SWEBenchOrchestrator(router).run_eval(limit=3)
+    
+    print("[SYSTEM] Model loaded successfully. Starting SWEBenchOrchestrator...", flush=True)
+    SWEBenchOrchestrator(router).run_eval(limit=3)  
