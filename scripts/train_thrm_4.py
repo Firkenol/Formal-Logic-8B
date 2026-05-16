@@ -1,8 +1,14 @@
 import torch
 from datasets import load_dataset
-from peft import LoraConfig
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, TrainingArguments
-from trl import SFTTrainer, DataCollatorForCompletionOnlyLM
+from peft import LoraConfig, get_peft_model
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    TrainingArguments,
+    Trainer,
+    DataCollatorForSeq2Seq
+)
 
 model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 
@@ -31,12 +37,37 @@ peft_config = LoraConfig(
     task_type="CAUSAL_LM",
 )
 
+# manually wrap peft since we dropped SFTTrainer
+model = get_peft_model(model, peft_config)
+
 dataset = load_dataset("json", data_files="thrm_training_v2.jsonl", split="train")
 
-response_template = "<|start_header_id|>assistant<|end_header_id|>\n\n"
-collator = DataCollatorForCompletionOnlyLM(response_template, tokenizer=tokenizer)
+def mask_prompt_labels(example):
+    full_text = example["text"]
+    separator = "<|start_header_id|>assistant<|end_header_id|>\n\n"
 
-# dropped SFTConfig for standard TrainingArguments to bypass trl version mismatches
+    parts = full_text.split(separator)
+    if len(parts) >= 2:
+        prompt_str = parts[0] + separator
+    else:
+        prompt_str = full_text
+
+    tokenized = tokenizer(full_text, truncation=True, max_length=4096)
+    prompt_tokenized = tokenizer(prompt_str, truncation=True, max_length=4096)
+
+    prompt_len = len(prompt_tokenized["input_ids"])
+
+    labels = tokenized["input_ids"].copy()
+    for i in range(min(prompt_len, len(labels))):
+        labels[i] = -100
+
+    tokenized["labels"] = labels
+    return tokenized
+
+tokenized_dataset = dataset.map(mask_prompt_labels, remove_columns=["text"])
+
+collator = DataCollatorForSeq2Seq(tokenizer, return_tensors="pt", padding=True)
+
 training_args = TrainingArguments(
     output_dir="./thrm_qlora_v4",
     per_device_train_batch_size=4,
@@ -49,14 +80,11 @@ training_args = TrainingArguments(
     report_to="wandb",
 )
 
-# moved max_seq_length directly into SFTTrainer
-trainer = SFTTrainer(
+trainer = Trainer(
     model=model,
-    train_dataset=dataset,
+    train_dataset=tokenized_dataset,
     args=training_args,
-    peft_config=peft_config,
     data_collator=collator,
-    max_seq_length=4096,
 )
 
 trainer.train()
