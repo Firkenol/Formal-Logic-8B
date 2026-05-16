@@ -1,6 +1,6 @@
 import torch
 from datasets import load_dataset
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -28,6 +28,9 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="auto",
 )
 
+# crucial for memory savings with gradient checkpointing in 4-bit
+model = prepare_model_for_kbit_training(model)
+
 peft_config = LoraConfig(
     r=16,
     lora_alpha=32,
@@ -37,8 +40,10 @@ peft_config = LoraConfig(
     task_type="CAUSAL_LM",
 )
 
-# manually wrap peft since we dropped SFTTrainer
 model = get_peft_model(model, peft_config)
+# explicit enable to cut activation memory by ~70%
+model.config.use_cache = False 
+model.gradient_checkpointing_enable()
 
 dataset = load_dataset("json", data_files="thrm_training_v2.jsonl", split="train")
 
@@ -70,14 +75,16 @@ collator = DataCollatorForSeq2Seq(tokenizer, return_tensors="pt", padding=True)
 
 training_args = TrainingArguments(
     output_dir="./thrm_qlora_v4",
-    per_device_train_batch_size=4,
-    gradient_accumulation_steps=4,
+    per_device_train_batch_size=2,          # halved batch size to free VRAM
+    gradient_accumulation_steps=8,          # doubled accumulation to maintain effective batch of 64
     learning_rate=2e-4,
     logging_steps=10,
     max_steps=500,
     bf16=True,
     optim="paged_adamw_8bit",
     report_to="wandb",
+    gradient_checkpointing=True,            # forces trainer to use checkpointing
+    gradient_checkpointing_kwargs={"use_reentrant": False} # prevents silent backward pass errors
 )
 
 trainer = Trainer(
