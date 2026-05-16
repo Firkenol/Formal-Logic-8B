@@ -8,17 +8,18 @@ with open(in_path) as fin, open(out_path, "w") as fout:
         row = json.loads(line)
         text = row["text"]
 
-        # Extract user content (between <|user|> and <|assistant|>)
         user_part = text.split("<|user|>")[-1].split("<|assistant|>")[0].strip()
-
-        # Extract completion (everything after <|assistant|>)
         completion = text.split("<|assistant|>")[-1].strip()
 
-        # Skip if completion doesn't look like a real diff
+        # strip common markdown artifacts from synthetic chat data
+        completion = completion.replace("```diff", "")
+        completion = completion.replace("```python", "")
+        completion = completion.replace("```", "")
+        completion = completion.strip()
+
         if not completion.startswith("diff --git") and "--- a/" not in completion:
             continue
 
-        # Rebuild with correct Llama-3 template
         formatted = (
             "<|begin_of_text|>"
             "<|start_header_id|>system<|end_header_id|>\n\n"
