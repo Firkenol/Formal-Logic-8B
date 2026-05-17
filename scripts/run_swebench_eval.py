@@ -15,7 +15,7 @@ swe_bench_dir = os.path.expanduser("~/Formal-Logic-8B/SWE-bench")
 bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
 
 print("Loading SWE-bench Lite...")
-dataset = load_dataset("princeton-nlp/SWE-bench_Lite", split="test")
+dataset = load_dataset("princeton-nlp/SWE-bench_Lite", split="test[:10]")
 
 def format_prompt(instance):
     problem_statement = instance["problem_statement"]
