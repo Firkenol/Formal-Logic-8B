@@ -4,7 +4,7 @@
 thrm_qlora_v2/
 thrm_qlora_v3/
 thrm_3b_qlora_final/
-
+thrm_qlora_v4/
 # Evaluation Logs and Data
 *.log
 *.jsonl
