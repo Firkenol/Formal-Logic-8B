@@ -22,7 +22,7 @@ from tqdm import tqdm
 
 print("Starting OOD generation...")
 base_model_id = "meta-llama/Meta-Llama-3.1-8B"
-adapter_path = "./thrm_3b_qlora_final"
+adapter_path = "./thrm_qlora_v4"
 output_file = "ood_predictions.jsonl"
 
 bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
