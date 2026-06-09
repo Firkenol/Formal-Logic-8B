@@ -11,6 +11,7 @@ thrm_qlora_v4/
 *.txt
 logs/
 nohup.out
+*.csv
 
 # Python Cache
 __pycache__/

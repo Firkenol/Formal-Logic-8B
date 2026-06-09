@@ -2,6 +2,7 @@ import os
 import json
 import subprocess
 import time
+import requests
 import torch
 from datasets import load_dataset
 from peft import PeftModel
@@ -16,17 +17,49 @@ swe_bench_dir = os.path.expanduser("~/Formal-Logic-8B/SWE-bench")
 bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16)
 
 print("Loading SWE-bench Lite (SMOKE TEST: 10 Issues)...")
-# SLICED TO 10 FOR SMOKE TEST
 dataset = load_dataset("princeton-nlp/SWE-bench_Lite", split="test[:10]")
 
-def format_prompt(instance):
+def get_oracle_file_context(instance):
+    """Extracts file paths from the hidden gold patch and downloads the raw code from GitHub."""
+    repo = instance['repo']
+    commit = instance['base_commit']
+    gold_patch = instance['patch']
+    
+    # 1. Identify which files need to be edited (without looking at the actual diff logic)
+    file_paths = set()
+    for line in gold_patch.split('\n'):
+        if line.startswith('--- a/'):
+            file_paths.add(line[6:])
+    
+    # 2. Download the historical file contents
+    file_context = ""
+    for fp in file_paths:
+        url = f"https://raw.githubusercontent.com/{repo}/{commit}/{fp}"
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                content = resp.text
+                
+                # Truncate massive files to prevent A100 VRAM OOM crashes
+                lines = content.split('\n')
+                if len(lines) > 3000:
+                    content = '\n'.join(lines[:3000]) + "\n\n... [TRUNCATED FOR LENGTH] ..."
+                    
+                file_context += f"--- {fp} ---\n```python\n{content}\n```\n\n"
+        except Exception as e:
+            file_context += f"--- {fp} ---\n[Error retrieving file from GitHub]\n\n"
+            
+    return file_context
+
+def format_prompt(instance, file_context):
     problem_statement = instance["problem_statement"]
     return (
         "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
         "You are a senior software engineer. Output a unified git diff to fix the issue. "
         "Use the standard --- a/file and +++ b/file format.<|eot_id|>"
         "<|start_header_id|>user<|end_header_id|>\n\n"
-        f"{problem_statement}<|eot_id|>"
+        f"Issue Description:\n{problem_statement}\n\n"
+        f"Available File Context:\n{file_context}<|eot_id|>"
         "<|start_header_id|>assistant<|end_header_id|>\n\n"
     )
 
@@ -42,12 +75,14 @@ model.eval()
 
 print("Generating Patches and Recording Efficiency Metrics...")
 with open(predictions_file, "w") as f, open("thrm_efficiency_metrics.csv", "w") as metrics_file:
-    # Write the CSV header for your research data
     metrics_file.write("instance_id,input_tokens,output_tokens,generation_time_sec\n")
     
     for i in tqdm(range(len(dataset)), desc="SWE-bench Inference"):
         instance = dataset[i]
-        prompt = format_prompt(instance)
+        
+        # Dynamically fetch the code context from GitHub
+        file_context = get_oracle_file_context(instance)
+        prompt = format_prompt(instance, file_context)
         
         inputs = tokenizer(prompt, return_tensors="pt").to("cuda")
         input_token_count = inputs["input_ids"].shape[1]
@@ -67,7 +102,6 @@ with open(predictions_file, "w") as f, open("thrm_efficiency_metrics.csv", "w") 
             
         generated_text = tokenizer.decode(outputs[0][input_token_count:], skip_special_tokens=True)
         
-        # Log the efficiency data for your paper
         metrics_file.write(f"{instance['instance_id']},{input_token_count},{output_token_count},{generation_time:.2f}\n")
         metrics_file.flush()
         
@@ -80,13 +114,14 @@ with open(predictions_file, "w") as f, open("thrm_efficiency_metrics.csv", "w") 
         f.flush()
 
 print("Running SWE-bench Docker evaluation...")
+# Execute using the virtual environment to prevent dependency conflicts
 subprocess.run([
-    "python3", "-m", "swebench.harness.run_evaluation",
+    os.path.expanduser("~/Formal-Logic-8B/thrm_env/bin/python"), "-m", "swebench.harness.run_evaluation",
     "--predictions_path", os.path.abspath(predictions_file),
     "--run_id", "thrm_v4_eval",
     "--max_workers", "4",
     "--dataset_name", "princeton-nlp/SWE-bench_Lite",
-    "--split", "test[:10]" # IMPORTANT: Tell the harness to only evaluate the first 10
+    "--split", "test[:10]"
 ], cwd=swe_bench_dir)
 
 print("SWE-bench Smoke Test Complete.")
