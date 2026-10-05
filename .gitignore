@@ -21,3 +21,7 @@ __pycache__/
 # Environments and Tracking
 thrm_env/
 wandb/
+# v5 pipeline
+thrm_v5/
+data_v5/
+.cache_v5_files/

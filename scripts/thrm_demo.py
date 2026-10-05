@@ -19,6 +19,9 @@ import tempfile
 import time
 import warnings
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import thrm_format
+
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 warnings.filterwarnings("ignore")
@@ -46,32 +49,19 @@ def parse_args():
 
 
 # ----------------------------------------------------------------------------
-# Prompt: must match the training format in generate_dataset.py exactly:
-#   <|system|>\n<global_policy>..</global_policy>\n<directory_policy>..</directory_policy>
-#   \n<|user|>\n{issue}\n<|assistant|>\n{patch}
-# Training rows had no file contents, so the source is appended to the issue
-# text, and the assistant turn is pre-filled with the diff header so the model
+# Prompt format lives in thrm_format.py, shared with the v5 training data.
+# The assistant turn is pre-filled with the diff header so the model
 # continues straight into hunks.
 # ----------------------------------------------------------------------------
 
 def build_prompt(issue, repo, files, global_policy, directory_policy):
-    context = []
+    sources = []
     for rel in files:
         with open(os.path.join(repo, rel), encoding="utf-8") as fh:
-            context.append(f"Contents of {rel}:\n{fh.read()}")
-    user = issue.strip() + "\n\n" + "\n\n".join(context)
-
+            sources.append((rel, fh.read()))
     target = files[0]
     prefill = f"diff --git a/{target} b/{target}\n--- a/{target}\n+++ b/{target}\n@@"
-    prompt = (
-        "<|system|>\n"
-        f"<global_policy>{global_policy}</global_policy>\n"
-        f"<directory_policy>{directory_policy}</directory_policy>\n"
-        "<|user|>\n"
-        f"{user}\n"
-        "<|assistant|>\n"
-        f"{prefill}"
-    )
+    prompt = thrm_format.build_prompt(issue, sources, global_policy, directory_policy) + prefill
     return prompt, prefill
 
 
