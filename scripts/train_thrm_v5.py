@@ -10,12 +10,14 @@
 #   - LoRA on all attention and MLP projections, not just q/v
 #   - validation loss on held-out repos; the best checkpoint is kept
 #
-# Usage (from the repo root):
-#   python scripts/train_thrm_v5.py
+# Usage (from the repo root), one process per GPU:
+#   torchrun --nproc_per_node 4 scripts/train_thrm_v5.py
 
 import argparse
 import json
 import os
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
@@ -36,8 +38,9 @@ def parse_args():
     p.add_argument("--output-dir", default="./thrm_v5")
     p.add_argument("--epochs", type=float, default=2.0)
     p.add_argument("--lr", type=float, default=1e-4)
-    p.add_argument("--batch-size", type=int, default=2)
-    p.add_argument("--grad-accum", type=int, default=8)
+    p.add_argument("--batch-size", type=int, default=1)
+    p.add_argument("--grad-accum", type=int, default=4,
+                   help="effective batch = batch-size x grad-accum x number of GPUs")
     p.add_argument("--max-tokens", type=int, default=4096)
     p.add_argument("--lora-r", type=int, default=32)
     return p.parse_args()
@@ -77,6 +80,10 @@ class ListDataset(torch.utils.data.Dataset):
 def main():
     args = parse_args()
 
+    # One process per GPU under torchrun; plain `python` uses GPU 0.
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    torch.cuda.set_device(local_rank)
+
     tokenizer = AutoTokenizer.from_pretrained(args.base_model)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -87,7 +94,8 @@ def main():
         raw = load_jsonl(os.path.join(args.data_dir, f"{split}.jsonl"))
         rows = [t for t in (tokenize(e, tokenizer, args.max_tokens) for e in raw) if t]
         datasets[split] = ListDataset(rows)
-        print(f"{split}: {len(rows)} examples ({len(raw) - len(rows)} dropped for length)")
+        if local_rank == 0:
+            print(f"{split}: {len(rows)} examples ({len(raw) - len(rows)} dropped for length)")
 
     model = AutoModelForCausalLM.from_pretrained(
         args.base_model,
@@ -97,7 +105,7 @@ def main():
             bnb_4bit_use_double_quant=True,
             bnb_4bit_compute_dtype=torch.bfloat16,
         ),
-        device_map={"": 0},
+        device_map={"": local_rank},
     )
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
     model = get_peft_model(model, LoraConfig(
@@ -116,7 +124,7 @@ def main():
         output_dir=args.output_dir,
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
+        per_device_eval_batch_size=1,
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
         lr_scheduler_type="cosine",
@@ -135,6 +143,7 @@ def main():
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
+        ddp_find_unused_parameters=False,
         report_to="none",
     )
 
@@ -147,6 +156,8 @@ def main():
     )
     trainer.train()
 
+    if not trainer.is_world_process_zero():
+        return
     trainer.model.save_pretrained(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
     with open(os.path.join(args.output_dir, "train_log.json"), "w") as fh:

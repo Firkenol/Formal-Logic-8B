@@ -202,8 +202,12 @@ def main():
     # Validation split is held out by repository, so validation loss measures
     # transfer to unseen codebases rather than memorisation.
     examples.sort(key=lambda e: e["instance_id"])
-    repos = sorted({e["repo"] for e in examples})
-    random.Random(args.seed).shuffle(repos)
+    # Smallest repos first, so the held-out repos don't take a large repo
+    # (and most of the training data) with them.
+    counts = {}
+    for e in examples:
+        counts[e["repo"]] = counts.get(e["repo"], 0) + 1
+    repos = sorted(counts, key=lambda r: (counts[r], r))
     val_repos, val = set(), []
     for repo in repos:
         if len(val) >= args.val_size:
@@ -220,6 +224,7 @@ def main():
                 fh.write(json.dumps(e) + "\n")
         print(f"wrote {len(data)} examples to {path}")
     print(f"train repos: {len({e['repo'] for e in train_ex})}   val repos: {sorted(val_repos)}")
+    print("examples per repo:", dict(sorted(counts.items(), key=lambda kv: -kv[1])))
     print(f"skipped: {skipped}")
 
 
