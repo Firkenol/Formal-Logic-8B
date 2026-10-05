@@ -38,8 +38,10 @@ def parse_args():
     p.add_argument("--global-policy", default="Standard Policy")
     p.add_argument("--directory-policy", default="Local Logic")
     p.add_argument("--max-new-tokens", type=int, default=768)
-    p.add_argument("--temperature", type=float, default=0.0,
-                   help="0 = greedy decoding (deterministic, best for live demos)")
+    p.add_argument("--attempts", type=int, default=5,
+                   help="candidate patches to try; attempt 1 is greedy, the rest are sampled")
+    p.add_argument("--temperature", type=float, default=0.6,
+                   help="sampling temperature for attempts 2+")
     return p.parse_args()
 
 
@@ -86,7 +88,29 @@ def clean_patch(text):
             break
     while keep and keep[-1] == "":
         keep.pop()
-    return "\n".join(keep) + "\n"
+    return recount_hunks(keep)
+
+
+def recount_hunks(lines):
+    # The model often gets the @@ line counts wrong; rebuild them from the
+    # hunk body so both git apply and patch accept it.
+    out, i = [], 0
+    while i < len(lines):
+        m = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)", lines[i])
+        if not m:
+            out.append(lines[i])
+            i += 1
+            continue
+        body = []
+        i += 1
+        while i < len(lines) and not lines[i].startswith(("@@", "diff --git", "--- ")):
+            body.append(lines[i] if lines[i] else " ")  # bare blank = blank context line
+            i += 1
+        old = sum(1 for l in body if l[0] in " -")
+        new = sum(1 for l in body if l[0] in " +")
+        out.append(f"@@ -{m.group(1)},{old} +{m.group(2)},{new} @@{m.group(3)}")
+        out.extend(body)
+    return "\n".join(out) + "\n"
 
 
 # ----------------------------------------------------------------------------
@@ -150,11 +174,11 @@ def main():
     model = PeftModel.from_pretrained(model, args.adapter)
     model.eval()
 
-    banner("STEP 3  Generating patch")
     prompt, prefill = build_prompt(issue, args.repo, args.files,
                                    args.global_policy, args.directory_policy)
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-    gen_kwargs = dict(
+    prompt_len = inputs["input_ids"].shape[1]
+    base_kwargs = dict(
         max_new_tokens=args.max_new_tokens,
         pad_token_id=tokenizer.pad_token_id,
         eos_token_id=tokenizer.eos_token_id,
@@ -162,40 +186,63 @@ def main():
         tokenizer=tokenizer,
         repetition_penalty=1.05,
     )
-    if args.temperature > 0:
-        gen_kwargs.update(do_sample=True, temperature=args.temperature, top_p=0.95)
-    else:
-        gen_kwargs.update(do_sample=False)
 
-    t0 = time.time()
-    with torch.inference_mode():
-        out = model.generate(**inputs, **gen_kwargs)
-    elapsed = time.time() - t0
-    n_new = out.shape[1] - inputs["input_ids"].shape[1]
-    raw = tokenizer.decode(out[0][inputs["input_ids"].shape[1]:],
-                           skip_special_tokens=True, clean_up_tokenization_spaces=False)
-    patch = clean_patch(prefill + raw)
-    print(patch)
-    print(f"[{n_new} tokens in {elapsed:.1f}s]")
+    solved_on = None
+    ok_after = False
+    for attempt in range(1, args.attempts + 1):
+        banner(f"ATTEMPT {attempt}/{args.attempts}  "
+               + ("greedy" if attempt == 1 else f"sampled, T={args.temperature}"))
 
-    with open(os.path.join(work, "fix.patch"), "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(patch)
+        # reset the working copy to the original buggy state
+        run(["git", "checkout", "-q", "--", "."], work)
+        run(["git", "clean", "-qfd"], work)
 
-    banner("STEP 4  Applying patch with git")
-    res = run(["git", "apply", "--recount", "--ignore-whitespace", "--verbose", "fix.patch"], work)
-    if res.returncode != 0:
-        print("FAIL  patch did not apply\n" + res.stderr.strip())
-        print(f"\nWorking copy kept at: {work}")
-        sys.exit(1)
-    print("OK    " + (res.stderr.strip().splitlines()[-1] if res.stderr.strip() else "applied"))
+        gen_kwargs = dict(base_kwargs)
+        if attempt == 1:
+            gen_kwargs.update(do_sample=False)
+        else:
+            gen_kwargs.update(do_sample=True, temperature=args.temperature, top_p=0.95)
 
-    banner("STEP 5  Test suite AFTER patch")
-    ok_after, summary = run_tests(work)
-    print(("PASS  " if ok_after else "FAIL  ") + summary)
+        t0 = time.time()
+        with torch.inference_mode():
+            out = model.generate(**inputs, **gen_kwargs)
+        elapsed = time.time() - t0
+        raw = tokenizer.decode(out[0][prompt_len:], skip_special_tokens=True,
+                               clean_up_tokenization_spaces=False)
+        patch = clean_patch(prefill + raw)
+        print(patch)
+        print(f"[{out.shape[1] - prompt_len} tokens in {elapsed:.1f}s]")
+
+        with open(os.path.join(work, "fix.patch"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(patch)
+
+        # strict apply first, then a fuzzy fallback that tolerates small
+        # context mismatches (e.g. one blank line instead of two)
+        res = run(["git", "apply", "--recount", "--ignore-whitespace", "fix.patch"], work)
+        method = "git apply"
+        if res.returncode != 0:
+            res = run(["patch", "-p1", "--fuzz=3", "--no-backup-if-mismatch", "-i", "fix.patch"], work)
+            method = "patch --fuzz=3"
+        os.remove(os.path.join(work, "fix.patch"))
+        if res.returncode != 0:
+            err = (res.stderr or res.stdout).strip().splitlines()
+            print("APPLY FAIL  " + (err[-1] if err else "patch did not apply"))
+            continue
+        print(f"APPLY OK    via {method}")
+
+        ok_after, summary = run_tests(work)
+        print(("TESTS PASS  " if ok_after else "TESTS FAIL  ") + summary)
+        if ok_after:
+            solved_on = attempt
+            break
 
     banner("RESULT")
-    print(f"before: {'pass' if ok_before else 'fail'}   after: {'pass' if ok_after else 'fail'}")
-    print("RESOLVED" if ok_after and not ok_before else "NOT RESOLVED")
+    print(f"tests before: {'pass' if ok_before else 'fail'}")
+    if solved_on and not ok_before:
+        print(f"RESOLVED on attempt {solved_on} of {args.attempts}")
+        print(run(["git", "diff"], work).stdout)
+    else:
+        print(f"NOT RESOLVED in {args.attempts} attempts")
     print(f"Working copy kept at: {work}")
 
 
