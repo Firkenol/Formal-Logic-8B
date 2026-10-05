@@ -1,16 +1,20 @@
 #!/bin/bash
 # scripts/run_v5.sh: build v5 data, train on all GPUs, then run the demo.
-# Run from the repo root inside thrm_env:
-#   nohup bash scripts/run_v5.sh > v5_pipeline.log 2>&1 &
+# Run from the repo root inside thrm_env. setsid detaches it from the SSH
+# session; plain nohup is not enough because torchrun handles SIGHUP itself.
+#   setsid nohup bash scripts/run_v5.sh > v5_pipeline.log 2>&1 < /dev/null &
 #   tail -f v5_pipeline.log
 set -e
 
 pip install -q requests pytest numpy
 NUM_GPUS=$(nvidia-smi -L | wc -l)
 
-echo "[1/3] building training data $(date)"
-# source files are cached in .cache_v5_files, so reruns are quick
-python scripts/build_training_data_v5.py --max-examples 3000
+if [ -s data_v5/train.jsonl ] && [ -s data_v5/val.jsonl ]; then
+    echo "[1/3] data_v5 already built, skipping (delete data_v5/ to rebuild)"
+else
+    echo "[1/3] building training data $(date)"
+    python scripts/build_training_data_v5.py --max-examples 3000
+fi
 
 echo "[2/3] training on $NUM_GPUS GPUs $(date)"
 torchrun --nproc_per_node "$NUM_GPUS" scripts/train_thrm_v5.py \
