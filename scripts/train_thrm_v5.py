@@ -43,6 +43,8 @@ def parse_args():
                    help="effective batch = batch-size x grad-accum x number of GPUs")
     p.add_argument("--max-tokens", type=int, default=4096)
     p.add_argument("--lora-r", type=int, default=32)
+    p.add_argument("--eval-steps", type=int, default=50,
+                   help="evaluate and checkpoint every N steps")
     return p.parse_args()
 
 
@@ -136,9 +138,9 @@ def main():
         gradient_checkpointing_kwargs={"use_reentrant": False},
         logging_steps=10,
         eval_strategy="steps",
-        eval_steps=50,
+        eval_steps=args.eval_steps,
         save_strategy="steps",
-        save_steps=50,
+        save_steps=args.eval_steps,
         save_total_limit=3,
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",

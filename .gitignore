@@ -25,3 +25,10 @@ wandb/
 thrm_v5/
 data_v5/
 .cache_v5_files/
+
+# v6 pipeline
+thrm_v6/
+data_v6/
+eval_v6/
+*.v6_base.json
+*.v6_thrm.json
