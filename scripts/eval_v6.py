@@ -50,6 +50,11 @@ def parse_args():
     p.add_argument("--max-workers", type=int, default=4)
     p.add_argument("--skip-harness", action="store_true",
                    help="score: rebuild the table from existing harness logs only")
+    p.add_argument("--only-applied", action="store_true",
+                   help="score: only run instances where eval_local.py found a patch that applies")
+    p.add_argument("--cache-level", default="instance",
+                   help="harness image cache level; 'instance' keeps images so the second "
+                        "condition reuses them instead of pulling again")
     return p.parse_args()
 
 
@@ -188,6 +193,16 @@ def score(args):
     with open(os.path.join(args.out_dir, "instances.jsonl"), encoding="utf-8") as fh:
         ids = [json.loads(l)["instance_id"] for l in fh]
 
+    all_ids = ids
+    local_path = os.path.join(args.out_dir, "scores_local.json")
+    if args.only_applied:
+        # A patch that doesn't apply can't pass the tests, so only run the
+        # harness where at least one condition's patch applied (eval_local.py).
+        with open(local_path) as fh:
+            local = json.load(fh)
+        ids = [i for i in ids if any(local[c].get(i, {}).get("applied") for c in CONDITIONS)]
+        print(f"running harness on {len(ids)}/{len(all_ids)} instances where a patch applied")
+
     if not args.skip_harness:
         for cond in CONDITIONS:
             merged = os.path.abspath(os.path.join(args.out_dir, f"pred_{cond}.jsonl"))
@@ -203,10 +218,17 @@ def score(args):
                 "--predictions_path", merged,
                 "--max_workers", str(args.max_workers),
                 "--run_id", f"v6_{cond}",
+                "--cache_level", args.cache_level,
                 "--instance_ids", *ids,
             ])
 
     outcome = {c: {i: classify(c, i) for i in ids} for c in CONDITIONS}
+    if args.only_applied:
+        for c in CONDITIONS:
+            for i in all_ids:
+                if i not in outcome[c]:
+                    outcome[c][i] = "apply_fail"
+        ids = all_ids
     # Only instances where both conditions got a working environment are a
     # fair comparison.
     paired = [i for i in ids if all(outcome[c][i] != "env_error" for c in CONDITIONS)]
