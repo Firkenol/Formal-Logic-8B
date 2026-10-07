@@ -175,11 +175,12 @@ def classify(cond, iid):
     if os.path.exists(report):
         with open(report) as fh:
             return "resolved" if json.load(fh).get(iid, {}).get("resolved") else "unresolved"
-    log = os.path.join(d, "run_instance.log")
-    if os.path.exists(log):
+    for log in glob.glob(os.path.join(d, "*.log")):
         with open(log, errors="replace") as fh:
-            if "Patch Apply Failed" in fh.read():
-                return "apply_fail"
+            text = fh.read()
+        if ("Patch Apply Failed" in text or "hunks FAILED" in text
+                or "Failed to apply patch to container" in text):
+            return "apply_fail"
     return "env_error"
 
 
