@@ -47,7 +47,9 @@ def parse_args():
     p.add_argument("--cache-dir", default=".cache_v5_files")
     p.add_argument("--shard", type=int, default=0)
     p.add_argument("--num-shards", type=int, default=1)
-    p.add_argument("--max-workers", type=int, default=8)
+    p.add_argument("--max-workers", type=int, default=4)
+    p.add_argument("--skip-harness", action="store_true",
+                   help="score: rebuild the table from existing harness logs only")
     return p.parse_args()
 
 
@@ -164,53 +166,83 @@ def generate(args):
 
 # ----------------------------------------------------------------------------
 
+def classify(cond, iid):
+    """Per-instance outcome from the harness logs:
+    resolved / unresolved (patch applied, tests ran), apply_fail, or env_error
+    (Docker or harness problem, so the model was never actually tested)."""
+    d = os.path.join("logs", "run_evaluation", f"v6_{cond}", cond, iid)
+    report = os.path.join(d, "report.json")
+    if os.path.exists(report):
+        with open(report) as fh:
+            return "resolved" if json.load(fh).get(iid, {}).get("resolved") else "unresolved"
+    log = os.path.join(d, "run_instance.log")
+    if os.path.exists(log):
+        with open(log, errors="replace") as fh:
+            if "Patch Apply Failed" in fh.read():
+                return "apply_fail"
+    return "env_error"
+
+
 def score(args):
     with open(os.path.join(args.out_dir, "instances.jsonl"), encoding="utf-8") as fh:
         ids = [json.loads(l)["instance_id"] for l in fh]
 
-    results = {}
-    for cond in CONDITIONS:
-        merged = os.path.abspath(os.path.join(args.out_dir, f"pred_{cond}.jsonl"))
-        with open(merged, "w", encoding="utf-8") as out:
-            for shard in sorted(glob.glob(os.path.join(args.out_dir, f"pred_{cond}.shard*.jsonl"))):
-                with open(shard, encoding="utf-8") as fh:
-                    out.write(fh.read())
-        run_id = f"v6_{cond}"
-        subprocess.run([
-            sys.executable, "-m", "swebench.harness.run_evaluation",
-            "--dataset_name", DATASET, "--split", "test",
-            "--predictions_path", merged,
-            "--max_workers", str(args.max_workers),
-            "--run_id", run_id,
-            "--instance_ids", *ids,
-        ], check=True)
-        reports = glob.glob(f"*.{run_id}.json")
-        if not reports:
-            sys.exit(f"no harness report found for {run_id}")
-        with open(max(reports, key=os.path.getmtime)) as fh:
-            results[cond] = json.load(fh)
+    if not args.skip_harness:
+        for cond in CONDITIONS:
+            merged = os.path.abspath(os.path.join(args.out_dir, f"pred_{cond}.jsonl"))
+            with open(merged, "w", encoding="utf-8") as out:
+                for shard in sorted(glob.glob(os.path.join(args.out_dir, f"pred_{cond}.shard*.jsonl"))):
+                    with open(shard, encoding="utf-8") as fh:
+                        out.write(fh.read())
+            # Instances that already have a report are skipped by the harness,
+            # so a rerun only retries the ones that errored.
+            subprocess.run([
+                sys.executable, "-m", "swebench.harness.run_evaluation",
+                "--dataset_name", DATASET, "--split", "test",
+                "--predictions_path", merged,
+                "--max_workers", str(args.max_workers),
+                "--run_id", f"v6_{cond}",
+                "--instance_ids", *ids,
+            ])
 
-    n = len(ids)
+    outcome = {c: {i: classify(c, i) for i in ids} for c in CONDITIONS}
+    # Only instances where both conditions got a working environment are a
+    # fair comparison.
+    paired = [i for i in ids if all(outcome[c][i] != "env_error" for c in CONDITIONS)]
+
+    def row(label, cond, subset):
+        o = [outcome[cond][i] for i in subset]
+        n = len(o) or 1
+        applied = sum(x in ("resolved", "unresolved") for x in o)
+        resolved = o.count("resolved")
+        return (f"| {label} | {len(o)} | {applied} ({100 * applied / n:.0f}%) | "
+                f"{resolved} ({100 * resolved / n:.1f}%) |")
+
     lines = [
         "# THRM v6 clean evaluation",
         "",
-        f"SWE-bench Lite, {n} instances, none from repositories used in training.",
+        f"SWE-bench Lite, {len(ids)} instances, none from repositories used in training.",
         "Oracle localization (edited files shown, windowed around the edit), greedy decoding,",
         "identical prompts for both conditions, scored by the official SWE-bench Docker harness.",
         "",
-        "| Condition | Resolved | Rate | Empty patch | Harness error |",
-        "|---|---|---|---|---|",
+        f"## Paired comparison ({len(paired)} instances where both conditions were tested)",
+        "",
+        "| Condition | Tested | Patch applied | Resolved |",
+        "|---|---|---|---|",
+        row("Qwen2.5-Coder-7B (no adapter)", "base", paired),
+        row("+ THRM v6 adapter", "thrm", paired),
+        "",
+        "## Coverage",
+        "",
+        "| Condition | Tested | Patch failed to apply | Environment error (not tested) |",
+        "|---|---|---|---|",
     ]
     for cond, label in (("base", "Qwen2.5-Coder-7B (no adapter)"), ("thrm", "+ THRM v6 adapter")):
-        r = results[cond]
-        res = r.get("resolved_instances", 0)
-        lines.append(f"| {label} | {res}/{n} | {100 * res / n:.1f}% | "
-                     f"{r.get('empty_patch_instances', 0)} | {r.get('error_instances', 0)} |")
-    both = set(results["base"].get("resolved_ids", [])) & set(results["thrm"].get("resolved_ids", []))
-    only_thrm = set(results["thrm"].get("resolved_ids", [])) - set(results["base"].get("resolved_ids", []))
-    only_base = set(results["base"].get("resolved_ids", [])) - set(results["thrm"].get("resolved_ids", []))
-    lines += ["", f"Solved by both: {len(both)}   only with adapter: {len(only_thrm)}   "
-                  f"only without adapter: {len(only_base)}"]
+        vals = list(outcome[cond].values())
+        tested = sum(v in ("resolved", "unresolved", "apply_fail") for v in vals)
+        lines.append(f"| {label} | {tested} | {vals.count('apply_fail')} | {vals.count('env_error')} |")
+    with open(os.path.join(args.out_dir, "outcomes.json"), "w") as fh:
+        json.dump(outcome, fh, indent=1)
     text = "\n".join(lines) + "\n"
     with open(os.path.join(args.out_dir, "results.md"), "w", encoding="utf-8") as fh:
         fh.write(text)
