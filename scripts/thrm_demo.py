@@ -45,6 +45,8 @@ def parse_args():
                    help="candidate patches to try; attempt 1 is greedy, the rest are sampled")
     p.add_argument("--temperature", type=float, default=0.6,
                    help="sampling temperature for attempts 2+")
+    p.add_argument("--cpu", action="store_true",
+                   help="run on CPU (automatic when no GPU is present)")
     return p.parse_args()
 
 
@@ -152,15 +154,22 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(base_id)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
-    model = AutoModelForCausalLM.from_pretrained(
-        base_id,
-        quantization_config=BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-        ),
-        device_map="auto",
-    )
+    if args.cpu or not torch.cuda.is_available():
+        # 4-bit loading needs a GPU; on CPU load full bf16 weights (~16 GB RAM).
+        print("device     : CPU (bf16, slower; outputs can differ slightly from 4-bit GPU runs)")
+        torch.set_num_threads(os.cpu_count() or 1)
+        model = AutoModelForCausalLM.from_pretrained(base_id, dtype=torch.bfloat16,
+                                                     low_cpu_mem_usage=True)
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            base_id,
+            quantization_config=BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+            ),
+            device_map="auto",
+        )
     model = PeftModel.from_pretrained(model, args.adapter)
     model.eval()
 
