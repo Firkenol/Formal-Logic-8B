@@ -7,7 +7,7 @@
 # Usage (from the repo root):
 #   python scripts/thrm_demo.py
 #   python scripts/thrm_demo.py --repo demo_repo --issue demo_repo/issue.md \
-#       --files src/utils/data_loader.py --adapter ./thrm_3b_qlora_final
+#       --files src/utils/data_loader.py --adapter ./thrm_v6
 
 import argparse
 import os
@@ -35,7 +35,7 @@ def parse_args():
     p.add_argument("--issue", default="demo_repo/issue.md")
     p.add_argument("--files", nargs="+", default=["src/utils/data_loader.py"],
                    help="repo-relative files to show the model")
-    p.add_argument("--adapter", default="./thrm_3b_qlora_final")
+    p.add_argument("--adapter", default="./thrm_v6")
     p.add_argument("--base-model", default=None,
                    help="defaults to the base model recorded in the adapter config")
     p.add_argument("--global-policy", default="Standard Policy")
